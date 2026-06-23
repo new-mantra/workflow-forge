@@ -1,0 +1,113 @@
+{
+  "name": "Content Repurposing Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "repurpose-content",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "webhookId": "repurpose-in"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || {};\nconst rawText = (body.text || body.article || body.content || '').trim();\nconst source = body.source || 'webhook';\nif (!rawText || rawText.length < 50) {\n  throw new Error('Input too short. Provide at least 50 characters in \"text\", \"article\", or \"content\".');\n}\nreturn [{ json: { rawText, source } }];"
+      },
+      "id": "validate",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "model": "claude-3-5-haiku-20241022",
+          "max_tokens": 2048,
+          "messages": [
+            {
+              "role": "user",
+              "content": "You are a content repurposing assistant. Given the article below, produce THREE outputs separated by delimiters exactly as shown:\n\n===TWITTER_THREAD===\n[A 5-tweet thread summarizing the key insight. Each tweet max 280 chars. Numbered 1/5, 2/5, etc.]\n\n===LINKEDIN_POST===\n[A professional LinkedIn post (150–250 words) with a hook and a closing question.]\n\n===EMAIL_SNIPPET===\n[A short email newsletter blurb (80–120 words) in a friendly, direct tone.]\n\nARTICLE:\n{{ $json.rawText }}"
+            }
+          ]
+        },
+        "options": {
+          "headers": {
+            "anthropic-version": "2023-06-01",
+            "x-api-key": "YOUR_ANTHROPIC_API_KEY"
+          }
+        }
+      },
+      "id": "claude",
+      "name": "Claude Repurpose",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json.content?.[0]?.text || $input.first().json.body?.content?.[0]?.text || '';\nconst out = { twitter: '', linkedin: '', email: '', raw };\nconst twitterMatch = raw.match(/===TWITTER_THREAD===([\\s\\S]*?)(?===LINKEDIN_POST===|$)/i);\nconst linkedinMatch = raw.match(/===LINKEDIN_POST===([\\s\\S]*?)(?===EMAIL_SNIPPET===|$)/i);\nconst emailMatch = raw.match(/===EMAIL_SNIPPET===([\\s\\S]*)/i);\nif (twitterMatch) out.twitter = twitterMatch[1].trim();\nif (linkedinMatch) out.linkedin = linkedinMatch[1].trim();\nif (emailMatch) out.email = emailMatch[1].trim();\nreturn [{ json: out }];"
+      },
+      "id": "parse",
+      "name": "Parse Outputs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "options": {}
+      },
+      "id": "respond",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const out = $input.first().json;\nconst lines = [\n  '# Content Repurposing Results',\n  '',\n  '---',\n  '## Twitter/X Thread',\n  '',\n  out.twitter || '(No output parsed)',\n  '',\n  '---',\n  '## LinkedIn Post',\n  '',\n  out.linkedin || '(No output parsed)',\n  '',\n  '---',\n  '## Email Snippet',\n  '',\n  out.email || '(No output parsed)',\n  ''\n];\nreturn [{ json: { markdown: lines.join('\\n') } }];"
+      },
+      "id": "format",
+      "name": "Format Markdown",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 460]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{ "node": "Validate Input", "type": "main", "index": 0 }]]
+    },
+    "Validate Input": {
+      "main": [[{ "node": "Claude Repurpose", "type": "main", "index": 0 }]]
+    },
+    "Claude Repurpose": {
+      "main": [[{ "node": "Parse Outputs", "type": "main", "index": 0 }]]
+    },
+    "Parse Outputs": {
+      "main": [
+        [{ "node": "Respond to Webhook", "type": "main", "index": 0 }],
+        [{ "node": "Format Markdown", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [{ "name": "content", "id": "tag-content" }],
+  "staticData": null,
+  "pinData": {},
+  "versionId": "demo-v1"
+}

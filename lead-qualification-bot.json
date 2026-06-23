@@ -1,0 +1,110 @@
+{
+  "name": "Lead Qualification Bot",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "webhookId": "lead-qualify-in"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || {};\nconst email = (body.email || '').trim().toLowerCase();\nconst name = (body.name || '').trim();\nconst message = (body.message || body.notes || '').trim();\nif (!email || !email.includes('@')) {\n  throw new Error('Email is required');\n}\nreturn [{ json: { email, name, message, source: body.source || 'webhook', receivedAt: new Date().toISOString() } }];"
+      },
+      "id": "normalize",
+      "name": "Normalize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://person.clearbit.com/v2/combined/find",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [{ "name": "email", "value": "={{ $json.email }}" }]
+        },
+        "options": {
+          "headers": {
+            "Authorization": "Bearer YOUR_CLEARBIT_API_KEY"
+          }
+        }
+      },
+      "id": "enrich",
+      "name": "Enrich (Clearbit)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const enrich = $input.first().json;\nconst person = enrich.person || {};\nconst company = enrich.company || {};\nconst score = person.role ? 80 : company.name ? 60 : 30;\nconst out = {\n  email: enrich.email,\n  name: enrich.name,\n  role: person.role || null,\n  company: company.name || null,\n  industry: company.industry || null,\n  employees: company.employees || null,\n  intentScore: score,\n  message: enrich.message,\n  source: enrich.source\n};\nreturn [{ json: out }];"
+      },
+      "id": "score",
+      "name": "Score & Format",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [840, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK",
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "text": "🚀 New Lead Qualified",
+          "blocks": [
+            { "type": "section", "text": { "type": "mrkdwn", "text": "*New Qualified Lead*" } },
+            { "type": "section", "fields": [
+              { "type": "mrkdwn", "text": "*Email:*\n{{ $json.email }}" },
+              { "type": "mrkdwn", "text": "*Company:*\n{{ $json.company || 'Unknown' }}" },
+              { "type": "mrkdwn", "text": "*Role:*\n{{ $json.role || 'Unknown' }}" },
+              { "type": "mrkdwn", "text": "*Intent Score:*\n{{ $json.intentScore }}/100" }
+            ]},
+            { "type": "section", "text": { "type": "mrkdwn", "text": "*Message:*\n{{ $json.message }}" } }
+          ]
+        }
+      },
+      "id": "slack",
+      "name": "Notify Slack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1040, 220]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "options": {}
+      },
+      "id": "respond",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1040, 380]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{ "node": "Normalize Input", "type": "main", "index": 0 }]]
+    },
+    "Normalize Input": {
+      "main": [[{ "node": "Enrich (Clearbit)", "type": "main", "index": 0 }]]
+    },
+    "Enrich (Clearbit)": {
+      "main": [[{ "node": "Score & Format", "type": "main", "index": 0 }]]
+    },
+    "Score & Format": {
+      "main": [
+        [{ "node": "Notify Slack", "type": "main", "index": 0 }],
+        [{ "node": "Respond OK", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "leads", "id": "tag-leads" }]
+}

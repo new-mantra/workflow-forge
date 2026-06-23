@@ -1,0 +1,130 @@
+{
+  "name": "Support Ticket Triage",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trigger",
+      "name": "Email Trigger",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const email = $input.first().json;\nconst subject = (email.subject || '').toLowerCase();\nconst text = (email.textPlain || email.textHtml || '').toLowerCase();\nlet category = 'general';\nif (/refund|charge|billing|invoice|payment/.test(subject + ' ' + text)) category = 'billing';\nelse if (/bug|broken|error|crash|not working/.test(subject + ' ' + text)) category = 'bug';\nelse if (/feature|request|add|idea|suggestion/.test(subject + ' ' + text)) category = 'feature';\nreturn [{ json: { ...email, category, combinedText: text } }];"
+      },
+      "id": "heuristic",
+      "name": "Heuristic Pre-Label",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "model": "claude-3-5-haiku-20241022",
+          "max_tokens": 1024,
+          "messages": [
+            {
+              "role": "user",
+              "content": "You handle tier-1 support triage. Given the customer email below:\n1. Confirm the category: billing, bug, feature, or general.\n2. Draft a short, friendly first-response email (2-3 sentences max).\n3. Suggest the assignee role (e.g., 'billing-team', 'engineering', 'product', 'support').\n\nOutput exactly:\nCATEGORY: <category>\nDRAFT: <draft reply>\nASSIGNEE: <role>\n\nEMAIL:\nSubject: {{ $json.subject }}\nBody: {{ $json.combinedText }}"
+            }
+          ]
+        },
+        "options": {
+          "headers": {
+            "anthropic-version": "2023-06-01",
+            "x-api-key": "YOUR_ANTHROPIC_API_KEY"
+          }
+        }
+      },
+      "id": "claude",
+      "name": "Claude Triage + Draft",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json.content?.[0]?.text || '';\nconst category = (raw.match(/CATEGORY:\\s*(\\w+)/) || [])[1] || 'general';\nconst draft = (raw.match(/DRAFT:\\s*([\\s\\S]*?)(?=ASSIGNEE:|$)/) || [])[1]?.trim() || 'Thanks for reaching out. We are looking into this.';\nconst assignee = (raw.match(/ASSIGNEE:\\s*(\\w[-\\w]*)/) || [])[1] || 'support';\nreturn [{ json: { category, draftReply: draft, assignee } }];"
+      },
+      "id": "parse",
+      "name": "Parse Triage",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [860, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.notion.com/v1/pages",
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "parent": { "database_id": "YOUR_NOTION_DATABASE_ID" },
+          "properties": {
+            "Name": { "title": [{ "text": { "content": "Ticket: {{ $json.subject }}" } }] },
+            "Category": { "select": { "name": "={{ $json.category }}" } },
+            "Assignee": { "select": { "name": "={{ $json.assignee }}" } },
+            "Status": { "status": { "name": "Open" } },
+            "Draft Reply": { "rich_text": [{ "text": { "content": "={{ $json.draftReply }}" } }] }
+          }
+        },
+        "options": {
+          "headers": {
+            "Authorization": "Bearer YOUR_NOTION_API_KEY",
+            "Notion-Version": "2022-06-28"
+          }
+        }
+      },
+      "id": "notion",
+      "name": "Log to Notion",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1080, 220]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK",
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "text": "🆘 New Support Ticket",
+          "blocks": [
+            { "type": "section", "text": { "type": "mrkdwn", "text": "*{{ $json.category.toUpperCase() }}* ticket received. Assignee: {{ $json.assignee }}" } },
+            { "type": "section", "text": { "type": "mrkdwn", "text": "*Draft reply:*\n{{ $json.draftReply }}" } }
+          ]
+        }
+      },
+      "id": "slack",
+      "name": "Notify Slack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1080, 380]
+    }
+  ],
+  "connections": {
+    "Email Trigger": {
+      "main": [[{ "node": "Heuristic Pre-Label", "type": "main", "index": 0 }]]
+    },
+    "Heuristic Pre-Label": {
+      "main": [[{ "node": "Claude Triage + Draft", "type": "main", "index": 0 }]]
+    },
+    "Claude Triage + Draft": {
+      "main": [[{ "node": "Parse Triage", "type": "main", "index": 0 }]]
+    },
+    "Parse Triage": {
+      "main": [
+        [{ "node": "Log to Notion", "type": "main", "index": 0 }],
+        [{ "node": "Notify Slack", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "support", "id": "tag-support" }]
+}
